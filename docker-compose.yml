@@ -1,0 +1,54 @@
+services:
+
+  # ── Nginx – the only service exposed to the host ───────────
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - traefik
+    networks:
+      - taxi-net
+
+  # ── Traefik – API Gateway with rate-limiting ───────────────
+  traefik:
+    image: traefik:v3.0
+    command:
+      - "--api.insecure=true"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - taxi-net
+    # Traefik is NOT exposed to the host; Nginx handles that.
+
+  # ── Go Taxi Service ────────────────────────────────────────
+  taxi-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    labels:
+      - "traefik.enable=true"
+
+      # Route: any request to /location goes to this service
+      - "traefik.http.routers.taxi.rule=PathPrefix(`/location`)"
+      - "traefik.http.routers.taxi.entrypoints=web"
+      - "traefik.http.services.taxi.loadbalancer.server.port=8080"
+
+      # Rate-limit middleware: 5 requests per minute (average=5, period=1m)
+      - "traefik.http.middlewares.taxi-ratelimit.ratelimit.average=5"
+      - "traefik.http.middlewares.taxi-ratelimit.ratelimit.period=1m"
+      - "traefik.http.middlewares.taxi-ratelimit.ratelimit.burst=5"
+
+      # Attach middleware to the router
+      - "traefik.http.routers.taxi.middlewares=taxi-ratelimit"
+    networks:
+      - taxi-net
+
+networks:
+  taxi-net:
+    driver: bridge
