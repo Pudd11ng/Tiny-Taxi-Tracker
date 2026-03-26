@@ -1,0 +1,51 @@
+syntax = "proto3";
+
+package orderpb;
+
+option go_package = "./orderpb";
+
+// ─────────────────────────────────────────────────────────
+// Order Service — gRPC API
+// Manages orders; internally calls user-service via gRPC.
+// ─────────────────────────────────────────────────────────
+
+service OrderService {
+  // CreateOrder places a new order.
+  // Internally validates user existence by calling user-service gRPC.
+  rpc CreateOrder(CreateOrderRequest) returns (OrderResponse);
+
+  // GetOrder retrieves an order by ID.
+  rpc GetOrder(GetOrderRequest) returns (OrderResponse);
+
+  // ListUserOrders returns all orders for a given user.
+  rpc ListUserOrders(ListUserOrdersRequest) returns (ListUserOrdersResponse);
+}
+
+message CreateOrderRequest {
+  string user_id  = 1;
+  string item     = 2;
+  int32  quantity = 3;
+  double price    = 4;
+}
+
+message GetOrderRequest {
+  string order_id = 1;
+}
+
+message ListUserOrdersRequest {
+  string user_id = 1;
+}
+
+message OrderResponse {
+  string order_id   = 1;
+  string user_id    = 2;
+  string item       = 3;
+  int32  quantity   = 4;
+  double price      = 5;
+  string status     = 6;
+  string created_at = 7;
+}
+
+message ListUserOrdersResponse {
+  repeated OrderResponse orders = 1;
+}

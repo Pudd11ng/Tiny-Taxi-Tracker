@@ -3,12 +3,11 @@ FROM golang:1.22-alpine AS builder
 
 WORKDIR /app
 
-COPY go.mod ./
-RUN go mod download
-
+# Copy all source files and resolve dependencies.
+# go mod tidy downloads modules and generates go.sum.
 COPY . .
-
-RUN CGO_ENABLED=0 GOOS=linux go build -o taxi-tracker .
+RUN go mod tidy && \
+    CGO_ENABLED=0 GOOS=linux go build -o taxi-tracker .
 
 # ── Runtime stage ────────────────────────────────────────────
 FROM alpine:3.19

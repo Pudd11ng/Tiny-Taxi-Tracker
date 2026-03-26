@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"log/slog"
 	"net/http"
 	"os"
@@ -11,81 +10,54 @@ import (
 	"time"
 )
 
-// LocationResponse represents the JSON payload returned by the /location endpoint.
-type LocationResponse struct {
-	Driver string  `json:"driver"`
-	Lat    float64 `json:"lat"`
-	Lng    float64 `json:"lng"`
-}
-
-func locationHandler(w http.ResponseWriter, r *http.Request) {
-	start := time.Now()
-
-	resp := LocationResponse{
-		Driver: "Ali",
-		Lat:    1.29,
-		Lng:    103.85,
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(resp); err != nil {
-		slog.Error("failed to encode response",
-			"error", err,
-			"path", r.URL.Path,
-		)
-		http.Error(w, "failed to encode response", http.StatusInternalServerError)
-		return
-	}
-
-	slog.Info("request handled",
-		"method", r.Method,
-		"path", r.URL.Path,
-		"driver", resp.Driver,
-		"latency_ms", time.Since(start).Milliseconds(),
-	)
-}
-
-// healthzHandler responds to liveness probes.
-// Question answered: "Is the process alive and not deadlocked?"
-// Failure action:    Orchestrator kills and restarts the container.
-func healthzHandler(w http.ResponseWriter, r *http.Request) {
-	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("ok"))
-}
-
-// readyzHandler responds to readiness probes.
-// Question answered: "Is the process ready to accept traffic?"
-// Failure action:    Load balancer stops sending traffic to this instance.
-// In the future, this should check DB connection, Redis connection, etc.
-func readyzHandler(w http.ResponseWriter, r *http.Request) {
-	// TODO: check downstream dependencies (DB, cache, message queue)
-	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("ready"))
-}
-
 func main() {
 	// ── Structured logging (JSON) ────────────────────────────
-	// Production logs must be structured for querying in ELK/Loki/CloudWatch.
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
 	}))
 	slog.SetDefault(logger)
 
-	// ── Route registration ───────────────────────────────────
+	// ── Connect to PostgreSQL ────────────────────────────────
+	dbURL := getEnv("DATABASE_URL", "postgres://taxi:taxi@postgres:5432/taxi_tracker?sslmode=disable")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	store, err := NewStore(ctx, dbURL)
+	if err != nil {
+		slog.Error("failed to connect to PostgreSQL", "error", err)
+		os.Exit(1)
+	}
+	defer store.Close()
+	slog.Info("✅ connected to PostgreSQL")
+
+	// ── Connect to Redis ─────────────────────────────────────
+	redisAddr := getEnv("REDIS_ADDR", "redis:6379")
+	cache, err := NewCache(redisAddr, 30*time.Second) // 30s TTL for cached locations
+	if err != nil {
+		slog.Error("failed to connect to Redis", "error", err)
+		os.Exit(1)
+	}
+	defer cache.Close()
+	slog.Info("✅ connected to Redis")
+
+	// ── Route registration (Go 1.22+ method routing) ─────────
+	h := NewHandler(store, cache)
+
 	mux := http.NewServeMux()
-	mux.HandleFunc("/location", locationHandler)
-	mux.HandleFunc("/healthz", healthzHandler)
-	mux.HandleFunc("/readyz", readyzHandler)
+	mux.HandleFunc("POST /location", h.UpdateLocation)
+	mux.HandleFunc("GET /location/{driver_id}", h.GetLocation)
+	mux.HandleFunc("GET /drivers", h.ListDrivers)
+	mux.HandleFunc("GET /healthz", h.Healthz)
+	mux.HandleFunc("GET /readyz", h.Readyz)
 
 	// ── Server with timeouts ─────────────────────────────────
-	// Without timeouts, a slow client can hold a connection open forever,
-	// exhausting server resources (Slowloris attack vector).
 	srv := &http.Server{
 		Addr:         ":8080",
 		Handler:      mux,
-		ReadTimeout:  5 * time.Second,  // Max time to read the entire request
-		WriteTimeout: 10 * time.Second, // Max time to write the response
-		IdleTimeout:  120 * time.Second, // Max time for keep-alive connections
+		ReadTimeout:  5 * time.Second,
+		WriteTimeout: 10 * time.Second,
+		IdleTimeout:  120 * time.Second,
 	}
 
 	// ── Start server in a goroutine ──────────────────────────
@@ -98,28 +70,27 @@ func main() {
 	}()
 
 	// ── Graceful shutdown ────────────────────────────────────
-	// Wait for SIGINT (Ctrl+C) or SIGTERM (docker stop / k8s pod termination).
-	//
-	// Shutdown sequence:
-	//   1. Stop accepting NEW connections
-	//   2. Wait for IN-FLIGHT requests to complete (up to 30s)
-	//   3. Close idle connections immediately
-	//   4. Return — allowing deferred cleanup to run
-	//
-	// Why 30 seconds? Kubernetes default terminationGracePeriodSeconds is 30.
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	sig := <-quit
 
 	slog.Info("🛑 shutdown signal received", "signal", sig.String())
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer shutdownCancel()
 
-	if err := srv.Shutdown(ctx); err != nil {
+	if err := srv.Shutdown(shutdownCtx); err != nil {
 		slog.Error("forced shutdown", "error", err)
 		os.Exit(1)
 	}
 
 	slog.Info("✅ server stopped cleanly")
+}
+
+// getEnv reads an environment variable with a fallback default.
+func getEnv(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
 }

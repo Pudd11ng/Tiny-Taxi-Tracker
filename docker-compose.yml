@@ -1,6 +1,19 @@
+# ══════════════════════════════════════════════════════════
+# Docker Compose — Local Development
+# Runs the full distributed system locally (pre-Kubernetes)
+#
+# Usage:
+#   docker compose up --build
+#
+# Test:
+#   curl http://localhost/api/users
+#   curl -X POST http://localhost/api/users -d '{"name":"test","email":"test@example.com"}'
+#   curl -X POST http://localhost/api/orders -d '{"user_id":"user-ali","item":"Roti","quantity":1,"price":5.0}'
+# ══════════════════════════════════════════════════════════
+
 services:
 
-  # ── Nginx – the only service exposed to the host ───────────
+  # ── NGINX — Entry Point (simulates K8s Ingress) ────────
   nginx:
     image: nginx:alpine
     ports:
@@ -8,47 +21,91 @@ services:
     volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
     depends_on:
-      - traefik
+      - gateway
     networks:
-      - taxi-net
+      - app-net
 
-  # ── Traefik – API Gateway with rate-limiting ───────────────
-  traefik:
-    image: traefik:v3.0
-    command:
-      - "--api.insecure=true"
-      - "--providers.docker=true"
-      - "--providers.docker.exposedbydefault=false"
-      - "--entrypoints.web.address=:80"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-    networks:
-      - taxi-net
-    # Traefik is NOT exposed to the host; Nginx handles that.
-
-  # ── Go Taxi Service ────────────────────────────────────────
-  taxi-service:
+  # ── API Gateway ────────────────────────────────────────
+  gateway:
     build:
-      context: .
+      context: ./gateway
       dockerfile: Dockerfile
-    labels:
-      - "traefik.enable=true"
-
-      # Route: any request to /location goes to this service
-      - "traefik.http.routers.taxi.rule=PathPrefix(`/location`)"
-      - "traefik.http.routers.taxi.entrypoints=web"
-      - "traefik.http.services.taxi.loadbalancer.server.port=8080"
-
-      # Rate-limit middleware: 5 requests per minute (average=5, period=1m)
-      - "traefik.http.middlewares.taxi-ratelimit.ratelimit.average=5"
-      - "traefik.http.middlewares.taxi-ratelimit.ratelimit.period=1m"
-      - "traefik.http.middlewares.taxi-ratelimit.ratelimit.burst=5"
-
-      # Attach middleware to the router
-      - "traefik.http.routers.taxi.middlewares=taxi-ratelimit"
+    environment:
+      HTTP_PORT: ":8080"
+      USER_SERVICE_URL: "http://user-service:8081"
+      ORDER_SERVICE_URL: "http://order-service:8082"
+    depends_on:
+      user-service:
+        condition: service_healthy
+      order-service:
+        condition: service_healthy
     networks:
-      - taxi-net
+      - app-net
+
+  # ── User Service ───────────────────────────────────────
+  user-service:
+    build:
+      context: ./user-service
+      dockerfile: Dockerfile
+    environment:
+      HTTP_PORT: ":8081"
+      DATABASE_URL: "postgres://taxi:taxi@postgres:5432/taxi_tracker?sslmode=disable"
+      REDIS_ADDR: "redis:6379"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - app-net
+
+  # ── Order Service ──────────────────────────────────────
+  order-service:
+    build:
+      context: ./order-service
+      dockerfile: Dockerfile
+    environment:
+      HTTP_PORT: ":8082"
+      DATABASE_URL: "postgres://taxi:taxi@postgres:5432/taxi_tracker?sslmode=disable"
+      USER_SERVICE_URL: "http://user-service:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - app-net
+
+  # ── PostgreSQL ─────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: taxi
+      POSTGRES_PASSWORD: taxi
+      POSTGRES_DB: taxi_tracker
+    volumes:
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - app-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U taxi -d taxi_tracker"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ── Redis ──────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    networks:
+      - app-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
 networks:
-  taxi-net:
+  app-net:
     driver: bridge
+
+volumes:
+  pgdata:

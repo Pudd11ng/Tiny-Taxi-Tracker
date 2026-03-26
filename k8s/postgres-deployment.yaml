@@ -1,0 +1,135 @@
+# ══════════════════════════════════════════════════════════
+# PostgreSQL — Deployment + Service + ConfigMap
+#
+# Interview talking points:
+#   - StatefulSet is better for DBs (stable network identity, ordered
+#     start/stop), but Deployment is fine for MVP/learning
+#   - PersistentVolumeClaim ensures data survives pod restarts
+#   - ConfigMap for init.sql avoids baking schema into the image
+#   - In production: use managed DB (RDS, CloudSQL) to avoid
+#     operational overhead of managing PostgreSQL on K8s
+# ══════════════════════════════════════════════════════════
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init
+  namespace: app-system
+data:
+  init.sql: |
+    CREATE TABLE IF NOT EXISTS users (
+        user_id    VARCHAR(255) PRIMARY KEY,
+        name       VARCHAR(255) NOT NULL,
+        email      VARCHAR(255) UNIQUE NOT NULL,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_users_email ON users (email);
+
+    CREATE TABLE IF NOT EXISTS orders (
+        order_id   VARCHAR(255) PRIMARY KEY,
+        user_id    VARCHAR(255) NOT NULL REFERENCES users(user_id),
+        item       VARCHAR(255) NOT NULL,
+        quantity   INT NOT NULL DEFAULT 1,
+        price      DOUBLE PRECISION NOT NULL DEFAULT 0,
+        status     VARCHAR(50) NOT NULL DEFAULT 'pending',
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_orders_user_id ON orders (user_id);
+    CREATE INDEX IF NOT EXISTS idx_orders_created_at ON orders (created_at DESC);
+
+    INSERT INTO users (user_id, name, email) VALUES
+        ('user-ali',   'Ali Ahmad',    'ali@example.com'),
+        ('user-budi',  'Budi Santoso', 'budi@example.com'),
+        ('user-casey', 'Casey Lim',    'casey@example.com')
+    ON CONFLICT (user_id) DO NOTHING;
+
+    INSERT INTO orders (order_id, user_id, item, quantity, price, status) VALUES
+        ('order-001', 'user-ali',  'Nasi Lemak',   2, 12.50, 'completed'),
+        ('order-002', 'user-budi', 'Chicken Rice',  1,  8.00, 'pending'),
+        ('order-003', 'user-ali',  'Teh Tarik',     3,  4.50, 'completed')
+    ON CONFLICT (order_id) DO NOTHING;
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-pvc
+  namespace: app-system
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: app-system
+  labels:
+    app: postgres
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              value: "taxi"
+            - name: POSTGRES_PASSWORD
+              value: "taxi"
+            - name: POSTGRES_DB
+              value: "taxi_tracker"
+          volumeMounts:
+            - name: postgres-data
+              mountPath: /var/lib/postgresql/data
+            - name: init-script
+              mountPath: /docker-entrypoint-initdb.d
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "taxi", "-d", "taxi_tracker"]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "taxi", "-d", "taxi_tracker"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "250m"
+      volumes:
+        - name: postgres-data
+          persistentVolumeClaim:
+            claimName: postgres-pvc
+        - name: init-script
+          configMap:
+            name: postgres-init
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: app-system
+  labels:
+    app: postgres
+spec:
+  type: ClusterIP
+  selector:
+    app: postgres
+  ports:
+    - port: 5432
+      targetPort: 5432

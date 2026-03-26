@@ -1,0 +1,75 @@
+# ══════════════════════════════════════════════════════════
+# Order Service — Deployment + Service
+#
+# Interview talking points:
+#   - order-service calls user-service via K8s DNS.
+#     USER_SERVICE_URL env var points to the user-service ClusterIP.
+#   - If user-service is scaled to 5 replicas, order-service
+#     doesn't need to know — K8s Service load-balances automatically.
+#   - This is the power of service discovery: services are decoupled
+#     from specific pod IPs.
+# ══════════════════════════════════════════════════════════
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: order-service
+  namespace: app-system
+  labels:
+    app: order-service
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: order-service
+  template:
+    metadata:
+      labels:
+        app: order-service
+    spec:
+      containers:
+        - name: order-service
+          image: order-service:latest
+          imagePullPolicy: Never  # Use local image (kind/minikube)
+          ports:
+            - containerPort: 8082
+          env:
+            - name: HTTP_PORT
+              value: ":8082"
+            - name: DATABASE_URL
+              value: "postgres://taxi:taxi@postgres:5432/taxi_tracker?sslmode=disable"
+            - name: USER_SERVICE_URL
+              value: "http://user-service:8081"
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8082
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8082
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "50m"
+            limits:
+              memory: "128Mi"
+              cpu: "200m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: order-service
+  namespace: app-system
+  labels:
+    app: order-service
+spec:
+  type: ClusterIP
+  selector:
+    app: order-service
+  ports:
+    - port: 8082
+      targetPort: 8082

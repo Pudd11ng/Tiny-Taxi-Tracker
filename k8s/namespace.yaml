@@ -1,0 +1,15 @@
+# ══════════════════════════════════════════════════════════
+# Namespace — app-system
+# Isolates all application resources from other K8s workloads.
+#
+# Interview talking points:
+#   - Namespaces provide logical isolation in a cluster
+#   - Resource quotas can be applied per namespace
+#   - Network policies can restrict cross-namespace traffic
+# ══════════════════════════════════════════════════════════
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: app-system
+  labels:
+    app: distributed-system

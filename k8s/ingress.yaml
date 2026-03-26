@@ -1,0 +1,62 @@
+# ══════════════════════════════════════════════════════════
+# Ingress — NGINX Ingress Controller Route
+#
+# This is the EXTERNAL entry point into the cluster.
+# Routes HTTP requests to the API Gateway.
+#
+# Interview talking points:
+#   - Ingress vs Service: Ingress provides HTTP routing (path-based,
+#     host-based) on top of Services. A Service is L4 (TCP), an
+#     Ingress is L7 (HTTP).
+#   - NGINX Ingress Controller: runs as a pod inside the cluster
+#     and watches for Ingress resources. When an Ingress is created,
+#     NGINX updates its config to route traffic.
+#   - TLS termination: in production, Ingress handles SSL certificates
+#     (via cert-manager + Let's Encrypt).
+#   - In a real setup: use api.grab.com as the host instead of api.local
+#
+# Prerequisites:
+#   kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.9.5/deploy/static/provider/kind/deploy.yaml
+# ══════════════════════════════════════════════════════════
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: api-ingress
+  namespace: app-system
+  labels:
+    app: api-ingress
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/proxy-body-size: "1m"
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "5"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "30"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: api.local
+      http:
+        paths:
+          # All /api/* requests go to the API Gateway
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: api-gateway
+                port:
+                  number: 8080
+          # Health check endpoint
+          - path: /healthz
+            pathType: Exact
+            backend:
+              service:
+                name: api-gateway
+                port:
+                  number: 8080
+          # Root path
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-gateway
+                port:
+                  number: 8080

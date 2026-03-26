@@ -1,0 +1,40 @@
+syntax = "proto3";
+
+package userpb;
+
+option go_package = "./userpb";
+
+// ─────────────────────────────────────────────────────────
+// User Service — gRPC API
+// Used by order-service for synchronous user lookups.
+//
+// Interview talking points:
+//   - Proto3 syntax: fields default to zero values (no required keyword)
+//   - go_package: tells protoc-gen-go where to generate output
+//   - Service defines the RPC contract between services
+// ─────────────────────────────────────────────────────────
+
+service UserService {
+  // CreateUser registers a new user in the system.
+  rpc CreateUser(CreateUserRequest) returns (UserResponse);
+
+  // GetUser retrieves a user by ID.
+  // Called by order-service to validate user existence before creating orders.
+  rpc GetUser(GetUserRequest) returns (UserResponse);
+}
+
+message CreateUserRequest {
+  string name  = 1;
+  string email = 2;
+}
+
+message GetUserRequest {
+  string user_id = 1;
+}
+
+message UserResponse {
+  string user_id    = 1;
+  string name       = 2;
+  string email      = 3;
+  string created_at = 4;
+}
