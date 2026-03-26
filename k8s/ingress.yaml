@@ -26,7 +26,6 @@ metadata:
   labels:
     app: api-ingress
   annotations:
-    nginx.ingress.kubernetes.io/rewrite-target: /
     nginx.ingress.kubernetes.io/proxy-body-size: "1m"
     nginx.ingress.kubernetes.io/proxy-connect-timeout: "5"
     nginx.ingress.kubernetes.io/proxy-read-timeout: "30"
